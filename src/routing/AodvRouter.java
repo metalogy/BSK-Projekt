@@ -12,7 +12,7 @@ import java.util.UUID;
 
 public class AodvRouter extends ActiveRouter {
     private HashMap<String, RoutingEntry> routingTable = new HashMap<>(); //nazwa celu i routing entry //todo po trochę routing entry zduplikowany cel
-    //    private ArrayList<RouteRequest> routeRequests;
+    private ArrayList<RouteRequest> routeRequestsToProcess;
     private ArrayList<RouteRequest> historyRouteRequests = new ArrayList<>();
     private ArrayList<RouteReply> historyRouteReply = new ArrayList<>();
 
@@ -44,13 +44,18 @@ public class AodvRouter extends ActiveRouter {
             assert router instanceof AodvRouter : "Aodv only works with other routers of same type";
             AodvRouter otherRouter = (AodvRouter) router;
 
+            if(connection.getOtherNode(this.getHost())==this.getHost())
+            {
+                System.out.println("xd");
+            }
             otherRouter.receiveRreq(routeRequest, connection.getOtherNode(this.getHost()));
         });
     }
 
     public void receiveRreq(RouteRequest routeRequest, DTNHost rreqSender) {
+
         //jeżeli request ten nie został już przetworzony
-        if (!isRouteRequestInHistoryTable(routeRequest)) {
+        if (!isRouteRequestInHistoryTable(routeRequest) && rreqSender!=this.getHost()) { //todo
 
             //dodaj do tablicy przetworzonych
             this.historyRouteRequests.add(routeRequest);
@@ -60,12 +65,12 @@ public class AodvRouter extends ActiveRouter {
                 RoutingEntry routingTableEntry = routingTable.get(routeRequest.getSender());
 
                 if (!isRoutingTableEntryUpToDate(routeRequest)
-                        || routingTableEntry.getHop() > routeRequest.getHop()) { //route request nowszy lub ma krótszą ścieżkę
+                        || routingTableEntry.getHop() > routeRequest.getHop() +1) { //route request nowszy lub ma krótszą ścieżkę
 
                     RoutingEntry routingEntry = RoutingEntry.builder()
                             .destinationNode(routeRequest.getSender())
                             .nextNode(rreqSender)
-                            .hop(routeRequest.getHop())
+                            .hop(routeRequest.getHop()+1)
                             .sequence(routeRequest.getSequence())
                             .build();
 
@@ -78,11 +83,11 @@ public class AodvRouter extends ActiveRouter {
                 RoutingEntry routingEntry = RoutingEntry.builder()
                         .destinationNode(routeRequest.getSender())
                         .nextNode(rreqSender)
-                        .hop(routeRequest.getHop())
+                        .hop(routeRequest.getHop()+1)
                         .sequence(routeRequest.getSequence())
                         .build();
 
-                this.routingTable.put(rreqSender.toString(), routingEntry);
+                this.routingTable.put(routeRequest.getSender().toString(), routingEntry);
             }
 
             //sprawdz czy do ciebie
@@ -157,7 +162,7 @@ public class AodvRouter extends ActiveRouter {
                 .sequence(routeReply.getSequence())
                 .build();
 
-        routingTable.put(routeReply.getDestination().toString(), routingEntry);
+        routingTable.put(routeReply.getSource().toString(), routingEntry);
 
         //jezli nie do ciebie to przekaż dalej
         if (routeReply.getDestination() != this.getHost()) {
@@ -188,29 +193,22 @@ public class AodvRouter extends ActiveRouter {
         int connectionTime = SimClock.getIntTime(); //czas -> sequenceID
 
         if (connection.isUp()) { //jeżeli sąsiad wpisany kiedyś zaaktualizuj sequence
+            RoutingEntry neighbourEntry = RoutingEntry.builder()
+                    .destinationNode(connectionNode)
+                    .nextNode(connectionNode)
+                    .hop(1)
+                    .sequence(connectionTime)
+                    .build();
+
+            //todo change to lambda
             if (routingTable.containsKey(connectionNode) && routingTable.get(connectionNode).getSequence() < connectionTime) { //toodo sprawdz
-                RoutingEntry oldEntry = routingTable.get(connectionNode);
-                RoutingEntry newEntry = RoutingEntry.builder()
-                        .destinationNode(oldEntry.getDestinationNode())
-                        .nextNode(oldEntry.getNextNode())
-                        .hop(oldEntry.getHop())
-                        .sequence(connectionTime)
-                        .build();
-                routingTable.replace(connectionNode.toString(),
-                        newEntry);
+                routingTable.replace(connectionNode.toString(), neighbourEntry);
             } else // jeżeli nie masz sąsiada w tablicy routingu dodaj go
             {
-                RoutingEntry newEntry = RoutingEntry.builder()
-                        .destinationNode(connectionNode)
-                        .nextNode(connectionNode)
-                        .hop(1)
-                        .sequence(connectionTime)
-                        .build();
-                routingTable.put(connectionNode.toString(), newEntry);
+                routingTable.put(connectionNode.toString(), neighbourEntry);
             }
         } else { //brak połączenie z sąsiadem usuń z tablicy routingu
             routingTable.remove(connectionNode.toString());
-
         }
 
         //sprawdzić jakie wiadomości do przekazania
@@ -243,7 +241,4 @@ public class AodvRouter extends ActiveRouter {
         return UUID.randomUUID().toString();
     }
 
-    public void updateNeighbourInRoutingTable() {
-        //todo rozdziel i uporządkuj funkcje
-    }
 }
