@@ -11,7 +11,7 @@ import lombok.Setter;
 public class RouteRequest {
     private DTNHost sender;
     private DTNHost destination;
-    private String broadcastId;
+    private String requestId;
     private int sequence;
     private int hop;
 }

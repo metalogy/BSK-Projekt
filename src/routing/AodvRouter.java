@@ -11,9 +11,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 public class AodvRouter extends ActiveRouter {
-    private HashMap<String, RoutingEntry> routingTable = new HashMap<>();
-    private ArrayList<RouteRequest> routeRequests;
-    private ArrayList<RouteReply> routeReplies;
+    private HashMap<String, RoutingEntry> routingTable = new HashMap<>(); //nazwa celu i routing entry //todo po trochę routing entry zduplikowany cel
+    //    private ArrayList<RouteRequest> routeRequests;
+    private ArrayList<RouteRequest> historyRouteRequests = new ArrayList<>();
+    private ArrayList<RouteReply> historyRouteReply = new ArrayList<>();
+
+//    private ArrayList<RouteReply> routeReplies;
 
     public AodvRouter(Settings s) {
         super(s);
@@ -28,104 +31,154 @@ public class AodvRouter extends ActiveRouter {
         return new AodvRouter(this);
     }
 
-//    @Override
-//    public void update() {
-//        super.update();
-//
-//        if (exchangeDeliverableMessages() == null && (canStartTransfer() || !isTransferring())) {
-////            ArrayList<Message> messages = new ArrayList<>(getMessageCollection());
-//            routeRequests.forEach(routeRequest -> {
-//                String recipient = message.getTo().toString();
-//                if (routingTable.containsKey(recipient)) { //TODO sprawdz
-//                    unicastMessage(recipient, message);
-//                } else {
-//                    broadcastMessage(message);
-//                }
-//            });
-//        }
-//    }
-
-    @Override
-    public void update() {
-        super.update();
-
-        routeRequests.forEach(routeRequest -> {
-            //roześlij do wszystkich sąsiadów
-            this.getConnections().forEach(connection -> );
-        });
-    }
-
     public void unicastMessage(String recipent, Message message) {
         Optional<Connection> connection = getConnectionForDestinationNextNode(recipent);
         connection.ifPresent(value -> startTransfer(message, value));
     }
 
-//    public void broadcastMessage(Message message) {
-//        getConnections().forEach(connection -> startTransfer(message, connection));
-//    }
+    public void broadcastRreqToAllNeighbours(RouteRequest routeRequest) {
+        getConnections().forEach(connection -> {
 
-    public void broadcastRreqToNeighbour(RouteRequest routeRequest) {
-        getConnections().forEach(connection -> receiveRreq(routeRequest, connection));
+            DTNHost otherHost = connection.getOtherNode(this.getHost());
+            MessageRouter router = otherHost.getRouter();
+            assert router instanceof AodvRouter : "Aodv only works with other routers of same type";
+            AodvRouter otherRouter = (AodvRouter) router;
+
+            otherRouter.receiveRreq(routeRequest, connection.getOtherNode(this.getHost()));
+        });
     }
 
-    public void receiveRreq(RouteRequest routeRequest, Connection connection){
-        //sprawdz czy do ciebie
-        //sprawdź z tablicą historyczną routingu i porównaj z id requestu
-        //sprawdź numer sekwencji i ew. odeślij do nadawcy
-        //zaaktualizuj swoją tablice routingu
-        //jak nie ponownie rozeslij rreq
+    public void receiveRreq(RouteRequest routeRequest, DTNHost rreqSender) {
+        //jeżeli request ten nie został już przetworzony
+        if (!isRouteRequestInHistoryTable(routeRequest)) {
+
+            //dodaj do tablicy przetworzonych
+            this.historyRouteRequests.add(routeRequest);
+
+            //zaaktualizuj tablicę routingu
+            if (isNodeInRoutingTable(routeRequest.getSender())) {
+                RoutingEntry routingTableEntry = routingTable.get(routeRequest.getSender());
+
+                if (!isRoutingTableEntryUpToDate(routeRequest)
+                        || routingTableEntry.getHop() > routeRequest.getHop()) { //route request nowszy lub ma krótszą ścieżkę
+
+                    RoutingEntry routingEntry = RoutingEntry.builder()
+                            .destinationNode(routeRequest.getSender())
+                            .nextNode(rreqSender)
+                            .hop(routeRequest.getHop())
+                            .sequence(routeRequest.getSequence())
+                            .build();
+
+                    this.routingTable.replace(routeRequest.getSender().toString(), routingEntry);
+                }
+
+            } else {
+
+                //dodaj to tablicy routingu nowy wpis
+                RoutingEntry routingEntry = RoutingEntry.builder()
+                        .destinationNode(routeRequest.getSender())
+                        .nextNode(rreqSender)
+                        .hop(routeRequest.getHop())
+                        .sequence(routeRequest.getSequence())
+                        .build();
+
+                this.routingTable.put(rreqSender.toString(), routingEntry);
+            }
+
+            //sprawdz czy do ciebie
+            if (routeRequest.getDestination().equals(this.getHost())) {
+
+                //adresowane do nas wyślij rrep do noda od którego otrzymalismy pakiet RREQ
+                RouteReply routeReply = RouteReply.builder()
+                        .source(this.getHost())
+                        .destination(routeRequest.getSender())
+                        .sequence(SimClock.getIntTime())
+                        .hop(0)
+                        .build();
+
+                //wyciągamy router
+                MessageRouter router = rreqSender.getRouter();
+                assert router instanceof AodvRouter : "Aodv only works with other routers of same type";
+                AodvRouter otherRouter = (AodvRouter) router;
+
+                //wysyłamy rrep
+                otherRouter.receiveRrep(routeReply, this.getHost()); //wyślij RREP
+            } else if (isNodeInRoutingTable(routeRequest.getDestination()) //nie do nas lecz adresata w tablicy routingu
+                    && isRoutingTableEntryUpToDate(routeRequest)) { //wpis w tablicy routingu jest ważny //todo usunięcie/zamiana strych?
+
+                //zczytuje z tablicy routingu
+                RoutingEntry routingEntry = this.routingTable.get(routeRequest.getDestination().toString());
+
+                //wyślij rrep do tego od kogo otrzymaliśmy pakiet
+                RouteReply routeReply = RouteReply.builder()
+                        .source(routingEntry.getDestinationNode())
+                        .destination(routeRequest.getSender())
+                        .sequence(routingEntry.getSequence())
+                        .hop(routingEntry.getHop())
+                        .build();
+
+                //wyciągamy router //todo do funkcji
+                MessageRouter router = rreqSender.getRouter();
+                assert router instanceof AodvRouter : "Aodv only works with other routers of same type";
+                AodvRouter otherRouter = (AodvRouter) router;
+
+                otherRouter.receiveRrep(routeReply, this.getHost()); //wyślij RREP //todo może do publicznej tablicy
+            } else {
+                //zwieksz hop counta
+                routeRequest.setHop(routeRequest.getHop() + 1);
+                //rebroadcastuj rreq pakiet do sąsiadów
+                this.broadcastRreqToAllNeighbours(routeRequest);
+            }
+        }
     }
 
-    public void sendRrep(RouteReply routeReply) {
-        //todo
+
+    private boolean isRouteRequestInHistoryTable(RouteRequest routeRequest) {
+        return this.historyRouteRequests.stream().filter(historyRouteRequest ->
+                        historyRouteRequest.getSender().equals(routeRequest.getSender())
+                                && historyRouteRequest.getRequestId().equals(routeRequest.getRequestId()))
+                .findAny().isPresent();
     }
 
-    public void receiveRrep(RouteReply routeReply, Connection connection){
-       //todo
+    private boolean isNodeInRoutingTable(DTNHost dtnHost) {
+        return this.routingTable.containsKey(dtnHost);
     }
 
-    public Optional<Connection> getConnectionForDestinationNextNode(String destination) { //todo 2 typy mozna zwrocic
+    private boolean isRoutingTableEntryUpToDate(RouteRequest routeRequest) {
+        return this.routingTable.get(routeRequest.getDestination()).getSequence() >= routeRequest.getSequence();
+    }
+
+    public void receiveRrep(RouteReply routeReply, DTNHost rrepSender) {
+        //zapisz do routing table
+        RoutingEntry routingEntry = RoutingEntry.builder()
+                .destinationNode(routeReply.getSource())
+                .nextNode(rrepSender)
+                .hop(routeReply.getHop() + 1)
+                .sequence(routeReply.getSequence())
+                .build();
+
+        routingTable.put(routeReply.getDestination().toString(), routingEntry);
+
+        //jezli nie do ciebie to przekaż dalej
+        if (routeReply.getDestination() != this.getHost()) {
+
+            //wczesniej przeszedł RREQ więc wpis musi być
+            MessageRouter nextNodeRouter = this.routingTable.get(routeReply.getDestination().toString()).getNextNode().getRouter();
+            assert nextNodeRouter instanceof AodvRouter : "Aodv only works with other routers of same type";
+            AodvRouter aodvNextNodeRouter = (AodvRouter) nextNodeRouter;
+
+            //przesyłamy RREP
+            aodvNextNodeRouter.receiveRrep(routeReply, this.getHost());
+        }
+    }
+
+    public Optional<Connection> getConnectionForDestinationNextNode(String destination) {
         DTNHost destinationNextNode = routingTable.get(destination).getNextNode();
 
         return getConnections()
                 .stream()
                 .filter(connection -> destinationNextNode.equals(connection.getOtherNode(getHost())))
                 .findFirst();
-    }
-
-//    @Override
-//    public int receiveMessage(Message message, DTNHost sender) {
-//        int receiveCheckResult = checkReceiving(message, sender);
-//
-//        return receiveCheckResult == RCV_OK
-//                ? saveToRoutingTableAndReceiveMessage(message, sender)
-//                : receiveCheckResult;
-//    }
-
-    public int saveToRoutingTableAndReceiveMessage(Message message, DTNHost sender) {
-        saveToRoutingTable(message, sender);
-        return super.receiveMessage(message, sender);
-    }
-
-    public void saveToRoutingTable(Message message, DTNHost dtnHost) {
-        if (routingTable.containsKey(dtnHost.toString())) { //todo sprawdz
-            if (routingTable.get(dtnHost.toString()).getHop() > message.getHopCount()) {
-                RoutingEntry routingEntry = RoutingEntry.builder()
-                        .destinationNode(message.getFrom())
-                        .nextNode(dtnHost)
-                        .hop(message.getHopCount())
-                        .build();
-                routingTable.replace(dtnHost.toString(), routingEntry);
-            }
-        } else {
-            RoutingEntry routingEntry = RoutingEntry.builder()
-                    .destinationNode(message.getFrom())
-                    .nextNode(dtnHost)
-                    .hop(message.getHopCount())
-                    .build();
-
-            routingTable.put(message.getFrom().toString(), routingEntry);
-        }
     }
 
     @Override
@@ -176,14 +229,18 @@ public class AodvRouter extends ActiveRouter {
                 RouteRequest routeRequest = RouteRequest.builder()
                         .sender(this.getHost())
                         .destination(message.getTo())
-                        .broadcastId(UUID.randomUUID().toString())
+                        .requestId(this.generateUuid())
                         .sequence(SimClock.getIntTime())
                         .hop(0)
                         .build();
-                broadcastMessage(message);
-                this.routeRequests.add(routeRequest);
+
+                this.broadcastRreqToAllNeighbours(routeRequest);
             }
         });
+    }
+
+    private String generateUuid() {
+        return UUID.randomUUID().toString();
     }
 
     public void updateNeighbourInRoutingTable() {
