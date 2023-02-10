@@ -47,18 +47,15 @@ public class AodvRouter extends ActiveRouter {
 
     public void receiveRreq(RouteRequest routeRequest, DTNHost rreqSender) {
 
-        //jeżeli request ten nie został już przetworzony
         if (!isRouteRequestInHistoryTable(routeRequest) && rreqSender != this.getHost()) {
 
-            //dodaj do tablicy przetworzonych
             this.historyRouteRequests.add(routeRequest);
 
-            //zaaktualizuj tablicę routingu
             if (isNodeInRoutingTable(routeRequest.getSender())) {
                 RoutingEntry routingTableEntry = routingTable.get(routeRequest.getSender().toString());
 
                 if (!isRoutingTableEntryUpToDate(routeRequest)
-                        || routingTableEntry.getHop() > routeRequest.getHop() + 1) { //route request nowszy lub ma krótszą ścieżkę
+                        || routingTableEntry.getHop() > routeRequest.getHop() + 1) {
 
                     RoutingEntry routingEntry = RoutingEntry.builder()
                             .destinationNode(routeRequest.getSender())
@@ -72,7 +69,6 @@ public class AodvRouter extends ActiveRouter {
 
             } else {
 
-                //dodaj to tablicy routingu nowy wpis
                 RoutingEntry routingEntry = RoutingEntry.builder()
                         .destinationNode(routeRequest.getSender())
                         .nextNode(rreqSender)
@@ -83,10 +79,8 @@ public class AodvRouter extends ActiveRouter {
                 this.routingTable.put(routeRequest.getSender().toString(), routingEntry);
             }
 
-            //sprawdz czy do ciebie
             if (routeRequest.getDestination().equals(this.getHost())) {
 
-                //adresowane do nas wyślij rrep do noda od którego otrzymalismy pakiet RREQ
                 RouteReply routeReply = RouteReply.builder()
                         .source(this.getHost())
                         .destination(routeRequest.getSender())
@@ -94,14 +88,12 @@ public class AodvRouter extends ActiveRouter {
                         .hop(0)
                         .build();
 
-                getAodvRouterFromDtnHost(rreqSender).receiveRrep(routeReply, this.getHost()); //wyślij RREP
-            } else if (isNodeInRoutingTable(routeRequest.getDestination()) //nie do nas lecz adresata w tablicy routingu
-                    && isRoutingTableEntryUpToDate(routeRequest)) { //wpis w tablicy routingu jest ważny
+                getAodvRouterFromDtnHost(rreqSender).receiveRrep(routeReply, this.getHost());
+            } else if (isNodeInRoutingTable(routeRequest.getDestination())
+                    && isRoutingTableEntryUpToDate(routeRequest)) {
 
-                //zczytuje z tablicy routingu
                 RoutingEntry routingEntry = this.routingTable.get(routeRequest.getDestination().toString());
 
-                //wyślij rrep do tego od kogo otrzymaliśmy pakiet
                 RouteReply routeReply = RouteReply.builder()
                         .source(routingEntry.getDestinationNode())
                         .destination(routeRequest.getSender())
@@ -109,11 +101,9 @@ public class AodvRouter extends ActiveRouter {
                         .hop(routingEntry.getHop())
                         .build();
 
-                this.getAodvRouterFromDtnHost(rreqSender).receiveRrep(routeReply, this.getHost()); //wyślij RREP
+                this.getAodvRouterFromDtnHost(rreqSender).receiveRrep(routeReply, this.getHost());
             } else {
-                //zwieksz hop counta
                 routeRequest.setHop(routeRequest.getHop() + 1);
-                //rebroadcastuj rreq pakiet do sąsiadów
                 this.broadcastRreqToAllNeighbours(routeRequest, rreqSender);
             }
         }
@@ -134,7 +124,6 @@ public class AodvRouter extends ActiveRouter {
     }
 
     public void receiveRrep(RouteReply routeReply, DTNHost rrepSender) {
-        //zapisz do routing table
         RoutingEntry routingEntry = RoutingEntry.builder()
                 .destinationNode(routeReply.getSource())
                 .nextNode(rrepSender)
@@ -144,10 +133,8 @@ public class AodvRouter extends ActiveRouter {
 
         routingTable.put(routeReply.getSource().toString(), routingEntry);
 
-        //jezli nie do ciebie to przekaż dalej
         if (routeReply.getDestination() != this.getHost()) {
 
-            //przesyłamy RREP
             this.getAodvRouterFromDtnHost(this.routingTable.get(routeReply.getDestination().toString()).getNextNode())
                     .receiveRrep(routeReply, this.getHost());
         }
@@ -164,11 +151,10 @@ public class AodvRouter extends ActiveRouter {
 
     @Override
     public void changedConnection(Connection connection) {
-        //zaaktualizauj tablice routingu w oparciu o połaczenie
         DTNHost connectionNode = connection.getOtherNode(getHost());
-        int connectionTime = SimClock.getIntTime(); //czas -> sequenceID
+        int connectionTime = SimClock.getIntTime();
 
-        if (connection.isUp()) { //jeżeli sąsiad wpisany kiedyś zaaktualizuj sequence
+        if (connection.isUp()) {
             RoutingEntry neighbourEntry = RoutingEntry.builder()
                     .destinationNode(connectionNode)
                     .nextNode(connectionNode)
@@ -178,21 +164,17 @@ public class AodvRouter extends ActiveRouter {
 
 
             routingTable.put(connectionNode.toString(), neighbourEntry);
-        } else { //brak połączenie z sąsiadem usuń z tablicy routingu
+        } else {
             routingTable.remove(connectionNode.toString());
         }
 
-        //sprawdzić jakie wiadomości do przekazania
         ArrayList<Message> messages = new ArrayList<>(getMessageCollection());
         messages.forEach(message -> {
             String recipient = message.getTo().toString();
 
             if (routingTable.containsKey(recipient)) {
-                //posiadamy wpis w tablicy routingu -> wyślij wiadomość
                 unicastMessage(recipient, message);
-                //funkcja start transfer sama usunie wiadomość!!!
             } else {
-                //nie mamy adresata, musimy rozesłać RREQ
 
                 RouteRequest routeRequest = RouteRequest.builder()
                         .sender(this.getHost())
